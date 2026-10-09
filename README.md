@@ -49,7 +49,7 @@ Sourced bash, at `~/.pi/agent/jobs/<name>.conf` (`PI_JOBS_DIR` overrides the dir
 |---|---|
 | `GATHER` | Command whose stdout is the job's data. Required. |
 | `PROMPT` | Prompt file, relative to the jobs dir. Unset = no model, deliver `GATHER`'s output. |
-| `MODEL` | pi `provider/model`. Default `$PI_JOB_MODEL`, else `local-ornith/ornith-1.5-35b-a3b`. |
+| `MODEL` | pi `provider/model`. Default `$PI_JOB_MODEL`, else `local-ornith/cybertiel-coder-35b-a3b`. |
 | `HEALTH` | URL that must answer before the model runs. Default `$PI_JOB_HEALTH`, else `http://127.0.0.1:8092/health`. |
 | `DELIVER` | Command run instead of `signal-send`, with `OUT` (saved output) and `WORK` (scratch dir) exported. Must exit non-zero on a failed delivery. |
 
