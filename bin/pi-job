@@ -1,0 +1,91 @@
+#!/usr/bin/env bash
+# pi-job — run one scheduled job: gather script -> pi -p -> saved copy -> Signal.
+# Driven by pi-job@<name>.service from pi-job-<name>.timer (systemd/). Split out of
+# halo-prep, where it replaced Hermes's cron jobs (halo-prep docs/13 Phase C).
+#
+# Install:  cp bin/pi-job ~/.local/bin/ && chmod +x ~/.local/bin/pi-job
+#           cp <your jobs>/* ~/.pi/agent/jobs/
+# Run:      pi-job <name>          (reads ~/.pi/agent/jobs/<name>.conf)
+#
+# A job's .conf is sourced bash and sets:
+#   GATHER   command whose stdout is the job's data (required)
+#   PROMPT   prompt file, relative to the jobs dir; unset = no model, deliver GATHER's output
+#   MODEL    pi provider/model (default $PI_JOB_MODEL, else local-ornith/ornith-1.5-35b-a3b)
+#   HEALTH   URL that must answer before the model is called
+#            (default $PI_JOB_HEALTH, else http://127.0.0.1:8092/health)
+#   DELIVER  command run instead of signal-send, with OUT (the saved output) and WORK
+#            exported; it must exit non-zero on a failed delivery (e.g. a job that emails)
+#
+# EXIT CODE IS THE CONTRACT, as for signal-send: every step's failure exits
+# non-zero, so the unit's OnFailure= fires. Two traps it avoids on purpose:
+#   - `pi --mode json` exits 0 on a failed turn; `pi -p` exits 1 when
+#     the final stopReason is error/aborted, so -p is what's used.
+#   - `pi -p` blocks forever on an open stdin; stdin is
+#     /dev/null here even when run by hand.
+set -euo pipefail
+
+NAME="${1:?usage: pi-job <name>}"
+JOBS="${PI_JOBS_DIR:-${HOME}/.pi/agent/jobs}"
+# Defaults are the box this was written on (a llama-server on :8092 behind the pi provider
+# local-ornith); they stay literal so an existing install behaves exactly as before. Another
+# box sets PI_JOB_MODEL / PI_JOB_HEALTH once (e.g. Environment= in a drop-in for
+# pi-job@.service) instead of repeating MODEL/HEALTH in every .conf. A .conf still wins.
+PROMPT="" DELIVER=""
+MODEL="${PI_JOB_MODEL:-local-ornith/ornith-1.5-35b-a3b}"
+HEALTH="${PI_JOB_HEALTH:-http://127.0.0.1:8092/health}"
+# shellcheck disable=SC1090
+. "${JOBS}/${NAME}.conf"
+: "${GATHER:?${NAME}.conf sets no GATHER}"
+
+log() { echo ">> [pi-job ${NAME}] $*" >&2; }
+WORK="$(mktemp -d)"
+trap 'rm -rf "${WORK}"' EXIT
+# Saved copies go to the job's own state dir, not ~/Downloads: until 2026-10-09 they did, and
+# four jobs left ~5 files a day there. The name keeps the job prefix because resolve_topic.py
+# and podcast_topics.py glob for it. PI_JOBS_OUT overrides the parent dir (tests).
+OUT="${PI_JOBS_OUT:-${XDG_DATA_HOME:-${HOME}/.local/share}/pi-jobs}/${NAME}/${NAME}-$(date +%F).md"
+
+# 1. Preflight. The llama units restart on any exit (Restart=always, 2026-09-23);
+#    a job fired mid-restart would otherwise report a model error.
+if [ -n "${PROMPT}" ]; then
+    for _ in 1 2 3 4 5 6; do curl -sf -m 5 "${HEALTH}" >/dev/null && break; sleep 10; done
+    curl -sf -m 5 "${HEALTH}" >/dev/null || { log "model not healthy at ${HEALTH}"; exit 1; }
+fi
+
+# 2. Gather. Its stdout is the only data the model sees.
+log "gather: ${GATHER}"
+bash -c "${GATHER}" </dev/null >"${WORK}/data.txt"
+[ -s "${WORK}/data.txt" ] || { log "gather produced no output"; exit 1; }
+
+# 3. Model. From an empty dir with -nc, so no AGENTS.md/CLAUDE.md is picked up
+#    (from this repo that was 12.7K tokens of prompt). --no-tools because every
+#    job gets its data from GATHER: the prompts' "read-only" rules are then true
+#    by construction, not by instruction.
+if [ -n "${PROMPT}" ]; then
+    log "model: ${MODEL}"
+    # -ne loads no extensions, so the one a job needs is named explicitly. schema-key-order
+    # (halo-prep config/pi/extensions/) reorders tool-schema keys for a local model that
+    # otherwise fumbles them; it is only passed if it is installed, so a box without it
+    # runs plain pi. PI_JOB_EXTENSION overrides the path; set it empty to load none.
+    EXT="${PI_JOB_EXTENSION-${HOME}/.pi/agent/extensions/schema-key-order.ts}"
+    EXT_ARGS=()
+    [ -n "${EXT}" ] && [ -r "${EXT}" ] && EXT_ARGS=(-e "${EXT}")
+    ( cd "${WORK}" && pi -p --no-session -nc -ns -np -ne -nt \
+        "${EXT_ARGS[@]}" \
+        --model "${MODEL}" --thinking off \
+        @data.txt "$(cat "${JOBS}/${PROMPT}")" </dev/null >"${WORK}/out.md" )
+    [ -s "${WORK}/out.md" ] || { log "model returned nothing"; exit 1; }
+else
+    cp "${WORK}/data.txt" "${WORK}/out.md"
+fi
+
+# 4. Keep a copy, then deliver.
+mkdir -p "$(dirname "${OUT}")"
+cp "${WORK}/out.md" "${OUT}"
+log "saved ${OUT}; sending"
+if [ -n "${DELIVER}" ]; then
+    OUT="${OUT}" WORK="${WORK}" bash -c "${DELIVER}" </dev/null
+else
+    signal-send - <"${WORK}/out.md"
+fi
+log "delivered"

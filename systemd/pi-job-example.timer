@@ -1,0 +1,14 @@
+# Template: copy to pi-job-<name>.timer, set the time and Unit=, then
+#   systemctl --user daemon-reload && systemctl --user enable --now pi-job-<name>.timer
+# Persistent=true: a box that is shut down overnight rather than suspended runs a missed
+# job at next boot instead of skipping the day.
+[Unit]
+Description=Daily example pi job
+
+[Timer]
+OnCalendar=*-*-* 08:00:00
+Persistent=true
+Unit=pi-job@example.service
+
+[Install]
+WantedBy=timers.target

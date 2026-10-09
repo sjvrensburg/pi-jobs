@@ -1,0 +1,22 @@
+# One scheduled pi job. %i = job name = ~/.pi/agent/jobs/%i.conf.
+# Started by pi-job-<name>.timer; run by hand with `systemctl --user start pi-job@<name>`.
+#
+# Install:
+#   cp systemd/pi-job@.service systemd/notify-failure@.service <your pi-job-*.timer> ~/.config/systemd/user/
+#   systemctl --user daemon-reload
+#   systemctl --user enable --now pi-job-<name>.timer
+[Unit]
+Description=pi job: %i
+# A failed run messages Signal with the tail of its journal. Without this a job
+# that dies at 09:15 on a timer is silent until someone notices the missing message.
+OnFailure=notify-failure@%n.service
+After=network-online.target
+
+[Service]
+Type=oneshot
+# ~/.local/bin holds pi, pi-job and signal-send; user units get a minimal PATH.
+Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+ExecStart=%h/.local/bin/pi-job %i
+# A gather script plus one model turn. 30 min is ~10x a normal run and still
+# ends a hung one before the next day's timer.
+TimeoutStartSec=30min

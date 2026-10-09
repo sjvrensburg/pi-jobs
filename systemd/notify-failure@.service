@@ -1,0 +1,12 @@
+# OnFailure= target for pi-job@ (or any unit). %i = the failed unit's full name.
+# Sends its last 15 journal lines to Signal via signal-send (default recipient =
+# note-to-self, ~/.config/signal-send/env). If signal-send itself fails there is
+# nobody left to tell; the journal still has both. %H is the host name, so a
+# notice says which box it came from (it read a literal "evo-x3" before the split).
+[Unit]
+Description=Signal notice: %i failed
+
+[Service]
+Type=oneshot
+Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+ExecStart=/bin/bash -c 'signal-send "⚠️ $1 failed on %H. Last log lines:\n$(journalctl --user -u "$1" -n 15 --no-pager -o cat)\n\nRe-run: systemctl --user start $1"' _ %i

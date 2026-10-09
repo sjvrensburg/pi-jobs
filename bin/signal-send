@@ -1,0 +1,108 @@
+#!/usr/bin/env bash
+# signal-send — send a Signal message through the running signal-cli daemon.
+# Used by pi-job, notify-failure@ and anything else that needs to message the operator.
+#
+# Install:  cp bin/signal-send ~/.local/bin/ && chmod +x ~/.local/bin/signal-send
+# Config:   ~/.config/signal-send/env  (NOT in git -- it holds a phone number)
+#             SIGNAL_ACCOUNT=+<number>     the daemon's own account (signal-cli --account)
+#             SIGNAL_SEND_TO=+<number>     default recipient; the account itself = note-to-self,
+#                                     a sensible default for job output
+#             SIGNAL_RPC_URL=…        optional, default http://127.0.0.1:8081/api/v1/rpc
+# Usage:    signal-send [--to NUMBER] [--attach FILE]… "text"
+#           echo "text" | signal-send -          (text from stdin)
+#
+# WHY A DAEMON RPC AND NOT `signal-cli send`. signal-cli's daemon holds the
+# account's store lock; a second signal-cli process would block or fail against
+# it. Sending over its JSON-RPC does not conflict with an SSE listener on the same
+# daemon (e.g. a chat bot) -- only a second *receiver* would.
+#
+# EXIT CODE IS THE CONTRACT. Non-zero on a transport error, a JSON-RPC error, or
+# any per-recipient result that is not SUCCESS -- the same test Hermes's Signal
+# adapter applied (gateway/platforms/signal.py _validate_send_result). A caller's
+# OnFailure= or `|| retry` can trust $?; a script that "sent" into an error
+# response and exited 0 is the failure this file exists to prevent.
+set -euo pipefail
+
+ENV_FILE="${SIGNAL_SEND_ENV:-${HOME}/.config/signal-send/env}"
+# shellcheck disable=SC1090
+[ -r "${ENV_FILE}" ] && . "${ENV_FILE}"
+RPC="${SIGNAL_RPC_URL:-http://127.0.0.1:8081/api/v1/rpc}"
+TO="${SIGNAL_SEND_TO:-}"
+ACCOUNT="${SIGNAL_ACCOUNT:-}"
+ATTACH=()
+
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --to) TO="$2"; shift 2 ;;
+        --attach)
+            [ -r "$2" ] || { echo "signal-send: cannot read attachment: $2" >&2; exit 2; }
+            # signal-cli resolves paths itself, in the daemon's cwd: make them absolute.
+            ATTACH+=("$(realpath "$2")"); shift 2 ;;
+        -h|--help) sed -n '2,13p' "$0"; exit 0 ;;
+        --) shift; break ;;
+        *) break ;;
+    esac
+done
+
+if [ "${1:-}" = "-" ]; then TEXT="$(cat)"; else TEXT="${1:-}"; fi
+[ -n "${TO}" ] || { echo "signal-send: no recipient (--to, or SIGNAL_SEND_TO in ${ENV_FILE})" >&2; exit 2; }
+[ -n "${TEXT}" ] || [ ${#ATTACH[@]} -gt 0 ] || { echo "signal-send: nothing to send" >&2; exit 2; }
+
+# Signal caps a message at ~8000 characters; Hermes splits at MAX_MESSAGE_LENGTH =
+# 8000 (gateway/platforms/signal.py) and so does this, on line boundaries, marking
+# chunks "(i/n)". Attachments ride on the first chunk only.
+MAX=7900
+mapfile -d '' CHUNKS < <(python3 -c '
+import sys
+text, cap = sys.argv[1], int(sys.argv[2])
+chunks, cur = [], ""
+for line in text.splitlines(keepends=True):
+    while len(line) > cap:                     # a single over-long line: hard cut
+        if cur: chunks.append(cur); cur = ""
+        chunks.append(line[:cap]); line = line[cap:]
+    if len(cur) + len(line) > cap:
+        chunks.append(cur); cur = ""
+    cur += line
+chunks.append(cur)
+if len(chunks) > 1:
+    chunks = [c.rstrip("\n") + f"\n({i}/{len(chunks)})" for i, c in enumerate(chunks, 1)]
+sys.stdout.write("\0".join(chunks) + "\0")
+' "${TEXT}" "${MAX}")
+
+send_one() {   # $1 = message text; attachments from ATTACH if $2 = yes
+    local body resp bad attempt
+    local -a att=()
+    [ "$2" = yes ] && att=("${ATTACH[@]}")
+    body="$(jq -n --arg acct "${ACCOUNT}" --arg to "${TO}" --arg msg "$1" \
+        --args '{jsonrpc:"2.0", id:"signal-send", method:"send",
+                 params:({recipient:[$to], message:$msg}
+                         + (if $acct != "" then {account:$acct} else {} end)
+                         + (if ($ARGS.positional|length) > 0 then {attachments:$ARGS.positional} else {} end))}' \
+        "${att[@]}")"
+    # Three attempts, 5 s apart: the callers this replaces (poll_and_notify.sh) retried
+    # `hermes send` three times, and signal-cli restarts on its own (Restart=).
+    for attempt in 1 2 3; do
+        if resp="$(curl -sS -m 60 -X POST "${RPC}" -H 'Content-Type: application/json' -d "${body}")"; then
+            if jq -e '.error' >/dev/null <<<"${resp}"; then
+                echo "signal-send: RPC error: $(jq -c .error <<<"${resp}")" >&2
+                # A per-recipient verdict (UNREGISTERED_FAILURE, …) is permanent: retrying
+                # only delays the caller's failure by 10 s. Retry transport-shaped errors only.
+                jq -e '.error.data.response.results' >/dev/null <<<"${resp}" && return 1
+            elif bad="$(jq -r '[.result.results[]? | select((.type // "SUCCESS") != "SUCCESS") | .type] | join(",")' <<<"${resp}")" \
+                 && [ -z "${bad}" ]; then
+                return 0
+            else
+                echo "signal-send: delivery failed: ${bad}" >&2
+            fi
+        fi
+        [ "${attempt}" -lt 3 ] && sleep 5
+    done
+    return 1
+}
+
+first=yes
+for chunk in "${CHUNKS[@]}"; do
+    send_one "${chunk}" "${first}" || exit 1
+    first=no
+done
+exit 0
