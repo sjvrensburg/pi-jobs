@@ -1,0 +1,5 @@
+# Preference-mining data and job outputs live under ~/.local/share/pi-jobs;
+# never commit a copy that lands here by mistake.
+*.jsonl
+weights.json
+summary.md
