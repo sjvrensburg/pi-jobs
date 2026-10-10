@@ -4,7 +4,8 @@ Scheduled [pi](https://github.com/earendil-works/pi) jobs on systemd timers. One
 command, an optional one-turn prompt, a saved copy, and a delivery (Signal by default). This is
 the runner, not anyone's jobs: write your own `.conf` files.
 
-Split out of halo-prep at commit `5bec25c` on 2026-10-09, where it had replaced Hermes's cron
+Split out of halo-prep, the author's private runbook for one box, at commit `5bec25c` on
+2026-10-09, where it had replaced Hermes's cron
 jobs.
 
 ## What `pi-job <name>` does
