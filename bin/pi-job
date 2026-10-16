@@ -10,7 +10,7 @@
 # A job's .conf is sourced bash and sets:
 #   GATHER   command whose stdout is the job's data (required)
 #   PROMPT   prompt file, relative to the jobs dir; unset = no model, deliver GATHER's output
-#   MODEL    pi provider/model (default $PI_JOB_MODEL, else local-ornith/gemma4-e4b)
+#   MODEL    pi provider/model (default $PI_JOB_MODEL, else local-ornith/caveowl-35b-a3b)
 #   HEALTH   URL that must answer before the model is called
 #            (default $PI_JOB_HEALTH, else http://127.0.0.1:8092/health)
 #   DELIVER  command run instead of signal-send, with OUT (the saved output) and WORK
@@ -31,7 +31,7 @@ JOBS="${PI_JOBS_DIR:-${HOME}/.pi/agent/jobs}"
 # box sets PI_JOB_MODEL / PI_JOB_HEALTH once (e.g. Environment= in a drop-in for
 # pi-job@.service) instead of repeating MODEL/HEALTH in every .conf. A .conf still wins.
 PROMPT="" DELIVER=""
-MODEL="${PI_JOB_MODEL:-local-ornith/gemma4-e4b}"
+MODEL="${PI_JOB_MODEL:-local-ornith/caveowl-35b-a3b}"
 HEALTH="${PI_JOB_HEALTH:-http://127.0.0.1:8092/health}"
 # shellcheck disable=SC1090
 . "${JOBS}/${NAME}.conf"
